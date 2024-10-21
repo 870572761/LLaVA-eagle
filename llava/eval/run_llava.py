@@ -105,7 +105,7 @@ def eval_model(args):
         model.config
     ).to(model.device, dtype=torch.float16)
 
-    input_ids = (
+    input_ids = (#把input都token化了, image变成了-200
         tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
         .unsqueeze(0)
         .cuda()

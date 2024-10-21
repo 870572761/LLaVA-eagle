@@ -137,7 +137,7 @@ class LlavaMetaForCausalLM(ABC):
     def get_vision_tower(self):
         return self.get_model().get_vision_tower()
 
-    def encode_images(self, images):
+    def encode_images(self, images):#将image转为H
         image_features = self.get_model().get_vision_tower()(images)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
@@ -226,11 +226,12 @@ class LlavaMetaForCausalLM(ABC):
         input_ids = [cur_input_ids[cur_attention_mask] for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask)]
         labels = [cur_labels[cur_attention_mask] for cur_labels, cur_attention_mask in zip(labels, attention_mask)]
 
+        # new_input_embeds->cur_input_embeds->cur_image_features->image
         new_input_embeds = []
         new_labels = []
-        cur_image_idx = 0
+        cur_image_idx = 0# ready insert into embedding image
         for batch_idx, cur_input_ids in enumerate(input_ids):
-            num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
+            num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()#判断有几张图片
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
                 cur_input_embeds_1 = self.get_model().embed_tokens(cur_input_ids)
@@ -240,16 +241,16 @@ class LlavaMetaForCausalLM(ABC):
                 cur_image_idx += 1
                 continue
 
-            image_token_indices = [-1] + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist() + [cur_input_ids.shape[0]]
-            cur_input_ids_noim = []
+            image_token_indices = [-1] + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist() + [cur_input_ids.shape[0]]#[-1, 35, 59]
+            cur_input_ids_noim = []#得到去掉占位符-200的两段,相当于做了split
             cur_labels = labels[batch_idx]
             cur_labels_noim = []
             for i in range(len(image_token_indices) - 1):
                 cur_input_ids_noim.append(cur_input_ids[image_token_indices[i]+1:image_token_indices[i+1]])
                 cur_labels_noim.append(cur_labels[image_token_indices[i]+1:image_token_indices[i+1]])
-            split_sizes = [x.shape[0] for x in cur_labels_noim]
-            cur_input_embeds = self.get_model().embed_tokens(torch.cat(cur_input_ids_noim))
-            cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
+            split_sizes = [x.shape[0] for x in cur_labels_noim]# that is very important to eagle
+            cur_input_embeds = self.get_model().embed_tokens(torch.cat(cur_input_ids_noim))#text embedding
+            cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)#according to split_size
             cur_new_input_embeds = []
             cur_new_labels = []
 
@@ -257,7 +258,7 @@ class LlavaMetaForCausalLM(ABC):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
                 if i < num_images:
-                    cur_image_features = image_features[cur_image_idx]
+                    c = image_features[cur_image_idx]
                     cur_image_idx += 1
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
@@ -288,6 +289,7 @@ class LlavaMetaForCausalLM(ABC):
         for i, (cur_new_embed, cur_new_labels) in enumerate(zip(new_input_embeds, new_labels)):
             cur_len = cur_new_embed.shape[0]
             if getattr(self.config, 'tokenizer_padding_side', 'right') == "left":
+                #cat the vision and text
                 new_input_embeds_padded.append(torch.cat((
                     torch.zeros((max_len - cur_len, cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device),
                     cur_new_embed
@@ -297,6 +299,7 @@ class LlavaMetaForCausalLM(ABC):
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
             else:
+                #cat the vision and text
                 new_input_embeds_padded.append(torch.cat((
                     cur_new_embed,
                     torch.zeros((max_len - cur_len, cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device)
